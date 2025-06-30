@@ -26,7 +26,7 @@ Virtual Display Driver can be used to add virtual monitor, which can be used to 
 
 ## Known Limitations / Bugs
 
-- Cloning the screen in native FIP resolution (320/240px) maxes out at ~21 FPS
+- Cloning the screen in native FIP resolution (320/240px) maxes out at ~20 FPS
 - Cloning the screen in higher resolution requires scaling that affects output FPS
 
 ## Performance
@@ -36,13 +36,17 @@ During my testing, app uses only ~7MB of RAM and negligible CPU usage
 For the best performance i suggest to capturing native resolution - 320x240px
 
 ## Config Example
-Do not add any comments to your config.
+**!!! Do _not_ add any comments to your config.**
 Comment is a text with `//` prefix.
 
 Available modifier keys:
 - `LShift` / `RShift` - Left / Right Shift
 - `LAlt` / `RAlt` - Left Right Alt
 - `LControl` / `LCtrl` / `RControl` / `RCtrl` - Left / Right Control
+- Function keys like `F1`, `F5`
+- Special characters like `\`, `'` or `,`
+- `Escape`, `Space`, `Enter`
+- Arrows: `ArrowLeft`, `ArrowRight`, `ArrowUp`, `ArrowDown`
 
 ```
 {
@@ -90,4 +94,5 @@ Available modifier keys:
 - DCS-BIOS integration (input)
 - Custom Gauges / Panels support with DCS-Bios interation (output)
 - Config editor within the app
+- Profiles
 - Gauges editor within the app

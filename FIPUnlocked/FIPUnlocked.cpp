@@ -1,7 +1,4 @@
-﻿// FIPUnlocked.cpp : Ten plik zawiera funkcje "main". W nim rozpoczyna sie i konczy wykonywanie programu.
-// Komentarz: Implementacja dynamicznego ladowania DirectOutput.dll i wyswietlania tekstu na Saitek FIP.
-
-// --- GLOBALS (must be before any function that uses them) ---
+﻿// --- GLOBALS (must be before any function that uses them) ---
 volatile bool g_shouldExit = false;
 
 #include <iostream>
@@ -28,8 +25,6 @@ volatile bool g_shouldExit = false;
 #include <map>
 #include <string>
 #include <conio.h>
-
-// Komentarz: Dodajemy naglowki dla GUI.
 #include <commctrl.h>
 #include <richedit.h>
 #include <thread>
@@ -37,10 +32,8 @@ volatile bool g_shouldExit = false;
 #include <queue>
 #include <sstream>
 
-// Komentarz: Linkujemy biblioteki GUI.
 #pragma comment(lib, "comctl32.lib")
 
-// Komentarz: Definicje dla okna GUI.
 #define ID_EDIT_LOG 1001
 #define ID_BUTTON_CLEAR 1002
 #define ID_BUTTON_CONFIG 1003
@@ -49,13 +42,11 @@ volatile bool g_shouldExit = false;
 #define ID_CHECKBOX_PREVIEW 2001
 #define WM_APPEND_LOG (WM_APP + 1)
 
-// Komentarz: Struktura dla bezpiecznego logowania w watkach.
 struct LogMsgStruct {
     std::wstring message;
     ULONGLONG timestamp = 0;
 };
 
-// Komentarz: Globalne zmienne dla GUI.
 HWND g_hMainWindow = NULL;
 HWND g_hLogEdit = NULL;
 HWND g_hClearButton = NULL;
@@ -68,7 +59,13 @@ std::mutex g_logMutex;
 std::queue<LogMsgStruct> g_logQueue;
 std::thread g_guiThread;
 
-// Komentarz: Funkcja do bezpiecznego dodawania logow do kolejki.
+std::mutex g_previewMutex;
+HBITMAP g_hPreviewDIB = NULL;
+void* g_previewBits = NULL;
+ULONGLONG g_lastPreviewUpdate = 0;
+const ULONGLONG PREVIEW_UPDATE_INTERVAL = 33;
+
+// Function for safely adding logs to the queue.
 void QueueLogMessage(const std::wstring& message) {
     std::lock_guard<std::mutex> lock(g_logMutex);
     LogMsgStruct logMsg;
@@ -76,62 +73,58 @@ void QueueLogMessage(const std::wstring& message) {
     logMsg.timestamp = GetTickCount64();
     g_logQueue.push(logMsg);
     
-    // Komentarz: Wysylamy wiadomosc do okna GUI aby odswiezyc log.
     if (g_hMainWindow) {
         PostMessage(g_hMainWindow, WM_APPEND_LOG, 0, 0);
     }
 }
 
-// Komentarz: Funkcja do przetwarzania kolejki logow w watku GUI.
+// Function for processing the log queue in the GUI thread.
 void ProcessLogQueue() {
     std::lock_guard<std::mutex> lock(g_logMutex);
     while (!g_logQueue.empty()) {
         LogMsgStruct logMsg = g_logQueue.front();
         g_logQueue.pop();
-        
-        // Komentarz: Dodajemy timestamp do wiadomosci.
+
         wchar_t timestamp[32];
-        swprintf_s(timestamp, L"[%02d:%02d:%02d] ", 
+        swprintf_s(timestamp, L"[%02I64u:%02I64u:%02I64u] ", 
             (logMsg.timestamp / 3600000) % 24,
             (logMsg.timestamp / 60000) % 60,
             (logMsg.timestamp / 1000) % 60);
         
         std::wstring fullMessage = timestamp + logMsg.message + L"\r\n";
         
-        // Komentarz: Dodajemy tekst do kontrolki RichEdit.
         if (g_hLogEdit) {
             int textLen = GetWindowTextLength(g_hLogEdit);
             SendMessage(g_hLogEdit, EM_SETSEL, textLen, textLen);
             SendMessage(g_hLogEdit, EM_REPLACESEL, FALSE, (LPARAM)fullMessage.c_str());
-            // Komentarz: Ustawiamy selekcję na koniec i przewijamy do końca, aby zapewnić autoscroll.
             textLen = GetWindowTextLength(g_hLogEdit);
             SendMessage(g_hLogEdit, EM_SETSEL, textLen, textLen);
             SendMessage(g_hLogEdit, EM_SCROLLCARET, 0, 0);
-            // Wymuszamy przewinięcie paska dołu i odświeżenie kontrolki
+            // Force scroll bar to bottom and refresh the control
             SendMessage(g_hLogEdit, WM_VSCROLL, SB_BOTTOM, 0);
             UpdateWindow(g_hLogEdit);
         }
     }
 }
 
-// Komentarz: Procedura okna dla glownego okna aplikacji.
+// Window procedure for the main application window.
 LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
         case WM_CREATE: {
-            // Komentarz: Tworzymy kontrolki GUI.
+            // Create GUI controls.
             g_hLogEdit = CreateWindowEx(
                 WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY,
                 10, 10, 480, 400, hWnd, (HMENU)ID_EDIT_LOG, GetModuleHandle(NULL), NULL
             );
-            // Dodajemy checkbox do renderowania podglądu
+            // Add checkbox for rendering preview
             HWND hPreviewCheckbox = CreateWindowEx(
                 0, L"BUTTON", L"Show Preview",
                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                 500, 60, 120, 24, hWnd, (HMENU)ID_CHECKBOX_PREVIEW, GetModuleHandle(NULL), NULL
             );
-            SendMessage(hPreviewCheckbox, BM_SETCHECK, BST_CHECKED, 0); // Domyślnie włączony
-            // Preview window to the right of log (320x240, centered vertically, nie nachodzi na log)
+            SendMessage(hPreviewCheckbox, BM_SETCHECK, BST_UNCHECKED, 0); // Default is enabled
+            // Preview window to the right of log (320x240, centered vertically, does not overlap log)
             g_hPreview = CreateWindowEx(
                 WS_EX_CLIENTEDGE, L"STATIC", NULL,
                 WS_CHILD | WS_VISIBLE | SS_BITMAP,
@@ -170,31 +163,35 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         case WM_COMMAND: {
             switch (LOWORD(wParam)) {
                 case ID_BUTTON_CLEAR:
-                    // Komentarz: Czyscimy log.
+                    // Clear the log.
                     SetWindowText(g_hLogEdit, L"");
                     QueueLogMessage(L"Log cleared.");
                     break;
                     
                 case ID_BUTTON_CONFIG:
-                    // Komentarz: TODO: Otwieramy edytor konfiguracji.
+                    // TODO: Open config editor.
                     QueueLogMessage(L"Config editor - coming soon!");
                     break;
                     
                 case ID_BUTTON_SETTINGS:
-                    // Komentarz: TODO: Otwieramy ustawienia.
+                    // TODO: Open settings.
                     QueueLogMessage(L"Settings - coming soon!");
                     break;
                     
                 case ID_BUTTON_EXIT:
-                    // Komentarz: Zamykamy aplikacje.
+                    // Close the application.
                     g_shouldExit = true;
                     PostMessage(hWnd, WM_CLOSE, 0, 0);
                     break;
                 case ID_CHECKBOX_PREVIEW:
-                    // Komentarz: Pokaz/ukryj podgląd na podstawie checkboxa
+                    // Show/hide preview based on checkbox
                     if (g_hPreview) {
                         BOOL checked = (SendMessage((HWND)lParam, BM_GETCHECK, 0, 0) == BST_CHECKED);
                         ShowWindow(g_hPreview, checked ? SW_SHOW : SW_HIDE);
+                        // Reset preview update timer to immediately update when enabled
+                        if (checked) {
+                            g_lastPreviewUpdate = 0; // Force immediate update
+                        }
                     }
                     break;
             }
@@ -202,12 +199,12 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         }
         
         case WM_APPEND_LOG:
-            // Komentarz: Przetwarzamy kolejke logow.
+            // Process log queue
             ProcessLogQueue();
             break;
         
         case WM_SIZE:
-            // Komentarz: Dostosowujemy rozmiar i pozycje kontrolek, aby nie nachodziły na siebie.
+            // Adjust controls' size and position to not overlap
             if (g_hLogEdit && g_hPreview) {
                 RECT clientRect;
                 GetClientRect(hWnd, &clientRect);
@@ -216,7 +213,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
                 int previewHeight = 240;
                 int previewAreaWidth = previewWidth + margin;
                 int logWidth = clientRect.right - clientRect.left - previewAreaWidth - margin;
-                if (logWidth < 200) logWidth = 200; // minimalna szerokość logu
+                if (logWidth < 200) logWidth = 200; // minimal log width
                 int logHeight = clientRect.bottom - clientRect.top - 80;
                 if (logHeight < 100) logHeight = 100;
                 SetWindowPos(g_hLogEdit, NULL, 10, 10, logWidth, logHeight, SWP_NOZORDER);
@@ -239,7 +236,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
             break;
         
         case WM_CLOSE:
-            // Komentarz: Zamykamy aplikacje.
+            // Close the application.
             g_shouldExit = true;
             DestroyWindow(hWnd);
             break;
@@ -249,11 +246,17 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
                 DeleteObject(g_hPreviewBitmap);
                 g_hPreviewBitmap = NULL;
             }
+            // Clean up preview resources
+            if (g_hPreviewDIB) {
+                DeleteObject(g_hPreviewDIB);
+                g_hPreviewDIB = NULL;
+                g_previewBits = NULL;
+            }
             PostQuitMessage(0);
             break;
         
         case WM_GETMINMAXINFO: {
-            // Komentarz: Ustawiamy minimalny rozmiar okna na 720x420px.
+            // Set minimum window size to 720x420px
             MINMAXINFO* mmi = (MINMAXINFO*)lParam;
             mmi->ptMinTrackSize.x = 734;
             mmi->ptMinTrackSize.y = 427;
@@ -266,11 +269,11 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
     return 0;
 }
 
-// Komentarz: Funkcja do inicjalizacji GUI.
+// Function for initializing GUI.
 bool InitializeGUI() {
-    // Komentarz: Zaladuj biblioteke RichEdit (Msftedit.dll) przed utworzeniem kontrolki.
+    // Load RichEdit (Msftedit.dll) before creating control
     LoadLibrary(L"Msftedit.dll");
-    // Komentarz: Rejestrujemy klase okna.
+    // Register window class
     WNDCLASSEX wc = {0};
     wc.cbSize = sizeof(WNDCLASSEX);
     wc.lpfnWndProc = MainWindowProc;
@@ -285,7 +288,7 @@ bool InitializeGUI() {
         return false;
     }
     
-    // Komentarz: Tworzymy glowne okno.
+    // Create main window
     g_hMainWindow = CreateWindowEx(
         0, L"SaitekFIPMainWindow", L"Saitek FIP Controller",
         WS_OVERLAPPEDWINDOW,
@@ -297,14 +300,14 @@ bool InitializeGUI() {
         return false;
     }
     
-    // Komentarz: Pokazujemy okno.
+    // Show window
     ShowWindow(g_hMainWindow, SW_SHOW);
     UpdateWindow(g_hMainWindow);
     
     return true;
 }
 
-// Komentarz: Funkcja do uruchomienia petli wiadomosci GUI w osobnym watku.
+// Function for running GUI message loop in a separate thread
 void GUIMessageLoop() {
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
@@ -313,12 +316,12 @@ void GUIMessageLoop() {
     }
 }
 
-// Komentarz: Funkcja do logowania dzialajaca w trybie konsoli i GUI.
+// Function for logging in both console and GUI mode
 void LogMessage(const std::wstring& message) {
     QueueLogMessage(message);
 }
 
-// Komentarz: Funkcja do logowania z formatowaniem printf.
+// Function for logging with formatting printf
 void LogMessageFormatted(const wchar_t* format, ...) {
     wchar_t buffer[1024];
     va_list args;
@@ -328,10 +331,10 @@ void LogMessageFormatted(const wchar_t* format, ...) {
     LogMessage(std::wstring(buffer));
 }
 
-// Komentarz: Maksymalna liczba stron FIP ograniczona do 6.
+// Maximum number of FIP pages limited to 6
 constexpr int MAX_PAGES = 6;
 
-// Komentarz: Struktury konfiguracji dla JSON.
+// Configuration structures for JSON
 struct CaptureRegion {
     int x = 0;
     int y = 0;
@@ -360,7 +363,7 @@ struct AppConfig {
     std::map<std::string, std::string> button_mappings; // S1-S6 to key combo
 };
 
-// Komentarz: Globalne zmienne konfiguracji.
+// Global variables for configuration
 AppConfig g_config;
 bool g_configLoaded = false;
 
@@ -370,7 +373,12 @@ void signalHandler(int signal) {
     }
 }
 
-// Helper: Map string to virtual key code
+// Helper struct for parsed key token
+struct ParsedKey {
+    bool isModifier;
+    WORD vkCode;
+};
+
 struct KeyCombo {
     std::vector<WORD> modifiers; // e.g. VK_LSHIFT, VK_RCONTROL
     WORD mainKey;
@@ -378,39 +386,58 @@ struct KeyCombo {
     KeyCombo() : mainKey(0) {}
 };
 
-// Parse a key combination string like "LShift+H" or "RCtrl+LAlt+E"
+// Parse a single key token into a ParsedKey (modifier or main key)
+ParsedKey parseKeyToken(const std::string& token) {
+    ParsedKey pk = {false, 0};
+    if (token == "LShift") { pk.isModifier = true; pk.vkCode = VK_LSHIFT; }
+    else if (token == "RShift") { pk.isModifier = true; pk.vkCode = VK_RSHIFT; }
+    else if (token == "LControl" || token == "LCtrl") { pk.isModifier = true; pk.vkCode = VK_LCONTROL; }
+    else if (token == "RControl" || token == "RCtrl") { pk.isModifier = true; pk.vkCode = VK_RCONTROL; }
+    else if (token == "LAlt") { pk.isModifier = true; pk.vkCode = VK_LMENU; }
+    else if (token == "RAlt") { pk.isModifier = true; pk.vkCode = VK_RMENU; }
+    else if (token == "Escape" || token == "Esc") { pk.isModifier = false; pk.vkCode = VK_ESCAPE; }
+    else if (token == "Space") { pk.isModifier = false; pk.vkCode = VK_SPACE; }
+    else if (token == "Enter") { pk.isModifier = false; pk.vkCode = VK_RETURN; }
+    else if (token == "ArrowUp" || token == "Up") { pk.isModifier = false; pk.vkCode = VK_UP; }
+    else if (token == "ArrowDown" || token == "Down") { pk.isModifier = false; pk.vkCode = VK_DOWN; }
+    else if (token == "ArrowLeft" || token == "Left") { pk.isModifier = false; pk.vkCode = VK_LEFT; }
+    else if (token == "ArrowRight" || token == "Right") { pk.isModifier = false; pk.vkCode = VK_RIGHT; }
+    else if (token.length() == 1) { pk.isModifier = false; pk.vkCode = VkKeyScanA(token[0]) & 0xFF; }
+    else if (token.length() > 1 && token[0] == 'F' && isdigit(token[1])) { pk.isModifier = false; pk.vkCode = VK_F1 + (std::stoi(token.substr(1)) - 1); }
+    // Add more keys as needed
+    return pk;
+}
+
+// Parse a key combination string like "LShift+H", "RCtrl+LAlt+E", "Escape", "Space", "Enter", "ArrowUp", or "F1"
 KeyCombo parseKeyCombo(const std::string& combo) {
     KeyCombo result;
     result.combo = combo;
     size_t start = 0, end = 0;
     while ((end = combo.find('+', start)) != std::string::npos) {
         std::string token = combo.substr(start, end - start);
-        if (token == "LShift") result.modifiers.push_back(VK_LSHIFT);
-        else if (token == "RShift") result.modifiers.push_back(VK_RSHIFT);
-        else if (token == "LControl" || token == "LCtrl") result.modifiers.push_back(VK_LCONTROL);
-        else if (token == "RControl" || token == "RCtrl") result.modifiers.push_back(VK_RCONTROL);
-        else if (token == "LAlt") result.modifiers.push_back(VK_LMENU);
-        else if (token == "RAlt") result.modifiers.push_back(VK_RMENU);
-        // Add more as needed
+        ParsedKey pk = parseKeyToken(token);
+        if (pk.isModifier) {
+            result.modifiers.push_back(pk.vkCode);
+        }
+        // If not a modifier, ignore (main key should be last token)
         start = end + 1;
     }
     std::string last = combo.substr(start);
     if (!last.empty()) {
-        if (last == "LShift") result.modifiers.push_back(VK_LSHIFT);
-        else if (last == "RShift") result.modifiers.push_back(VK_RSHIFT);
-        else if (last == "LControl" || last == "LCtrl") result.modifiers.push_back(VK_LCONTROL);
-        else if (last == "RControl" || last == "RCtrl") result.modifiers.push_back(VK_RCONTROL);
-        else if (last == "LAlt") result.modifiers.push_back(VK_LMENU);
-        else if (last == "RAlt") result.modifiers.push_back(VK_RMENU);
-        else if (last.length() == 1) result.mainKey = VkKeyScanA(last[0]) & 0xFF;
-        else if (last.length() > 1 && last[0] == 'F' && isdigit(last[1])) result.mainKey = VK_F1 + (std::stoi(last.substr(1)) - 1);
-        // Add more as needed
+        ParsedKey pk = parseKeyToken(last);
+        if (pk.isModifier) {
+            result.modifiers.push_back(pk.vkCode);
+        } else if (pk.vkCode != 0) {
+            result.mainKey = pk.vkCode;
+        }
     }
     return result;
 }
 
 // Store parsed combos for S1-S6
 std::map<int, KeyCombo> g_fipButtonCombos;
+// Add support for rotary encoders
+std::map<std::string, KeyCombo> g_rotaryEncoderCombos;
 DWORD g_prevSoftButtonState = 0;
 
 // Typedef and global for soft button callback registration
@@ -429,7 +456,7 @@ Pfn_DirectOutput_SetLed g_pfnSetLed = NULL;
 typedef HRESULT(__stdcall* Pfn_DirectOutput_RemovePage)(void*, DWORD);
 Pfn_DirectOutput_RemovePage g_pfnRemovePage = NULL;
 
-// Komentarz: Funkcja do wczytywania konfiguracji z pliku JSON.
+// Function for loading configuration from JSON file
 bool LoadConfiguration(const std::string& configFile) {
     try {
         std::ifstream file(configFile);
@@ -460,6 +487,21 @@ bool LoadConfiguration(const std::string& configFile) {
             std::map<std::string, std::string>::iterator it = g_config.button_mappings.find(sx);
             if (it != g_config.button_mappings.end() && !it->second.empty()) {
                 g_fipButtonCombos[i] = parseKeyCombo(it->second);
+            }
+        }
+        
+        // Parse and store combos for rotary encoders
+        g_rotaryEncoderCombos.clear();
+        std::vector<std::string> rotaryKeys = {"LeftRotaryPlus", "LeftRotaryMinus", "RightRotaryPlus", "RightRotaryMinus"};
+        for (const auto& key : rotaryKeys) {
+            auto it = g_config.button_mappings.find(key);
+            if (it != g_config.button_mappings.end() && !it->second.empty()) {
+                g_rotaryEncoderCombos[key] = parseKeyCombo(it->second);
+                if (g_config.debug) {
+                    LogMessageFormatted(L"Rotary encoder %s mapped to: %s", 
+                        std::wstring(key.begin(), key.end()).c_str(),
+                        std::wstring(g_rotaryEncoderCombos[key].combo.begin(), g_rotaryEncoderCombos[key].combo.end()).c_str());
+                }
             }
         }
 
@@ -508,10 +550,10 @@ inline unsigned char clampToByte(float v) {
     return (unsigned char)(v < 0.0f ? 0.0f : (v > 255.0f ? 255.0f : v));
 }
 
-// Forward declaration for UpdatePreviewBitmap to fix C3861 errors.
+// Forward declaration for UpdatePreviewBitmap to fix C3861 errors
 void UpdatePreviewBitmap(const std::vector<unsigned char>& buffer);
 
-// Deklaracja funkcji screenshotu do FIP
+// Declaration of screenshot function for FIP
 void captureScreenRegionToFIPBuffer(int x, int y, int w, int h, std::vector<unsigned char>& outBuffer, const wchar_t* overlayText, ScaleMode scaleMode);
 
 // Forward declaration for FIP soft button callback
@@ -520,7 +562,7 @@ void __stdcall SoftButtonCallback(void* hDevice, DWORD dwButtons, void* pCtxt);
 // Forward declaration for page cleanup
 void cleanupDevicePages(void* hDevice);
 
-// Komentarz: Klasa do zarządzania renderingiem instrumentów na FIP.
+// Class for managing rendering of instruments on FIP
 class FIPDisplay {
 private:
     cairo_surface_t* surface;
@@ -531,8 +573,8 @@ private:
     
 public:
     FIPDisplay() : surface(nullptr), cr(nullptr) {
-        // Komentarz: Inicjalizacja bufora Cairo dla FIP (320x240, 24-bit RGB).
-        buffer.resize(width * height * 4); // BGRA format dla Cairo
+        // Initialize Cairo buffer for FIP (320x240, 24-bit RGB)
+        buffer.resize(width * height * 4); // BGRA format for Cairo
         surface = cairo_image_surface_create_for_data(
             buffer.data(), 
             CAIRO_FORMAT_ARGB32, 
@@ -542,7 +584,7 @@ public:
         );
         cr = cairo_create(surface);
         
-        // Komentarz: Ustawienie transformacji dla FIP (origin w lewym górnym rogu).
+        // Set transformation for FIP (origin in top-left corner)
         cairo_translate(cr, width/2, height/2); // Centrum ekranu
     }
     
@@ -565,7 +607,7 @@ public:
     }
 };
 
-// Komentarz: Definicje wskaznikow do funkcji z DirectOutput.dll.
+// Definitions for pointers to functions from DirectOutput.dll
 typedef HRESULT(__stdcall* Pfn_DirectOutput_Initialize)(const wchar_t* wszPluginName);
 typedef HRESULT(__stdcall* Pfn_DirectOutput_Deinitialize)();
 typedef HRESULT(__stdcall* Pfn_DirectOutput_RegisterDeviceCallback)(Pfn_DirectOutput_DeviceChange pfnCb, void* pCtxt);
@@ -578,7 +620,7 @@ typedef HRESULT(__stdcall* Pfn_DirectOutput_SetImage)(void* hDevice, DWORD dwPag
 typedef void(__stdcall* Pfn_DirectOutput_PageCallback)(void* hDevice, DWORD dwPage, bool bSetActive, void* pCtxt);
 typedef HRESULT(__stdcall* Pfn_DirectOutput_RegisterPageCallback)(void* hDevice, Pfn_DirectOutput_PageCallback pfnCb, void* pCtxt);
 
-// Komentarz: Globalne zmienne do przechowywania wskaznikow do funkcji z DLL.
+// Global variables for storing pointers to functions from DLL
 HMODULE g_hDirectOutput = NULL;
 Pfn_DirectOutput_Initialize g_pfnInitialize = NULL;
 Pfn_DirectOutput_Deinitialize g_pfnDeinitialize = NULL;
@@ -591,7 +633,7 @@ Pfn_DirectOutput_SetImageFromFile g_pfnSetImageFromFile = NULL;
 Pfn_DirectOutput_SetImage g_pfnSetImage = NULL;
 Pfn_DirectOutput_RegisterPageCallback g_pfnRegisterPageCallback = NULL;
 
-// Komentarz: Globalne zmienne do przechowywania informacji o urzadzeniu.
+// Global variables for storing device information
 void* g_hDevice = NULL;
 DWORD g_dwPage = 1;
 bool g_bDeviceFound = false;
@@ -616,7 +658,7 @@ void __stdcall PageCallback(void* hDevice, DWORD dwPage, bool bSetActive, void* 
 }
 
 void __stdcall LightUpButtons(void* hDevice) {
-        // --- Reapply LED illumination for new active page ---
+        // Reapply LED illumination for new active page
         if (g_pfnSetLed) {
             for (int i = 0; i < 6; ++i) {
                 std::string sx = "S" + std::to_string(i+1);
@@ -628,10 +670,10 @@ void __stdcall LightUpButtons(void* hDevice) {
                 }
             }
         }
-        // --- End LED logic ---
+        // End LED logic
 }
 
-// Komentarz: Callback wywolywany gdy urzadzenie jest dodawane lub usuwane.
+// Callback called when device is added or removed
 void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
 {
     if (bAdded) 
@@ -649,13 +691,13 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
             LogMessage(L"Cannot register soft button callback!");
         }
 
-        // Komentarz: Sprawdzamy czy konfiguracja zostala wczytana.
+        // Check if configuration has been loaded
         if (!g_configLoaded || g_config.pages.empty()) {
             LogMessage(L"Error: No configuration or no pages to display!");
             return;
         }
 
-        // Komentarz: Dodajemy strony na podstawie konfiguracji.
+        // Add pages based on configuration
         std::vector<DWORD> pageIds;
         bool allPagesAdded = true;
 
@@ -663,11 +705,11 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
             DWORD pageId = static_cast<DWORD>(i + 1);
             const auto& pageConfig = g_config.pages[i];
             
-            // Komentarz: Konwertujemy nazwę strony na wchar_t*.
+            // Convert page name to wchar_t*
             std::wstring wName(pageConfig.name.begin(), pageConfig.name.end());
             
             HRESULT hr = g_pfnAddPage(hDevice, pageId, wName.c_str(), 
-                (i == 0) ? FLAG_SET_AS_ACTIVE : 0); // Pierwsza strona jako aktywna
+                (i == 0) ? FLAG_SET_AS_ACTIVE : 0); // First page as active
             
             if (SUCCEEDED(hr)) {
                 pageIds.push_back(pageId);
@@ -688,10 +730,10 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
             return;
         }
 
-        // --- Set FIP button LEDs based on config ---
+        // Set FIP button LEDs based on config
         LightUpButtons(hDevice);
 
-        // Komentarz: Sprawdzamy typ urzadzenia i uruchamiamy petle renderowania.
+        // Check device type and start rendering loop
         if (g_pfnGetDeviceType) {
             GUID guid = {0};
             HRESULT hrType = g_pfnGetDeviceType(hDevice, &guid);
@@ -706,7 +748,7 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
                         QueryPerformanceFrequency(&freq);
                     }
                     
-                    // Komentarz: Inicjalizujemy wektory FPS dla kazdej strony.
+                    // Initialize FPS vectors for each page
                     std::vector<std::vector<double>> frameTimes(g_config.pages.size());
                     for (auto& ft : frameTimes) {
                         ft.reserve(60); // Pre-allocate space for 2 seconds at 30 FPS
@@ -730,10 +772,10 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
                         frameTime = now - prev;
                         t0 = t1;
 
-                            // Komentarz: Aktualizujemy FPS dla wszystkich stron.
+                            // Update FPS for all pages
                             for (size_t i = 0; i < g_config.pages.size(); ++i) {
                                 frameTimes[i].push_back(now);
-                                // Usuwamy stare ramki (starsze niz 2 sekundy)
+                                // Remove old frames (older than 2 seconds)
                                 while (!frameTimes[i].empty() && now - frameTimes[i].front() > 2.0) {
                                     frameTimes[i].erase(frameTimes[i].begin());
                                 }
@@ -741,19 +783,19 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
                         }
 
 
-                        // Komentarz: Przechwytujemy ekran dla aktywnej strony.
+                        // Capture screen for active page
                         if (g_activePage > 0 && g_activePage <= static_cast<DWORD>(g_config.pages.size())) {
                             size_t pageIndex = g_activePage - 1;
                             const auto& pageConfig = g_config.pages[pageIndex];
                             
-                            // Komentarz: Obliczamy FPS dla aktywnej strony.
+                            // Calculate FPS for active page
                             double avgFps = 0.0;
                             if (frameTimes[pageIndex].size() > 1) {
                                 avgFps = (frameTimes[pageIndex].size() - 1) / 
                                         (frameTimes[pageIndex].back() - frameTimes[pageIndex].front());
                             }
                             
-                            // Komentarz: Tworzymy tekst overlay z FPS.
+                            // Create text overlay with FPS
                             wchar_t overlay[128];
                             if (g_config.show_screen_names && g_config.show_fps) {
                                 swprintf(overlay, 128, L"FPS: %.1f | %s", avgFps, 
@@ -767,7 +809,7 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
                                 swprintf(overlay, 128, L"");
                             }
                             
-                            // Komentarz: Przechwytujemy ekran z konfiguracja strony.
+                            // Capture screen with page configuration
                             std::vector<unsigned char> buffer;
                             captureScreenRegionToFIPBuffer(
                                 pageConfig.capture_region.x,
@@ -779,7 +821,7 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
                                 pageConfig.scale_mode
                             );
                             
-                            // Komentarz: Aktualizujemy FIP z inteligentnym wykrywaniem strony.
+                            // Update FIP with intelligent page detection
                             UpdatePreviewBitmap(buffer);
                             HRESULT hr = fipDisplay.updateFIP(hDevice, g_activePage, g_pfnSetImage, buffer);
                             if (FAILED(hr)) {
@@ -787,7 +829,7 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
                                     LogMessageFormatted(L"Update failed for page %d. Probing all pages...", g_activePage);
                                 }
                                 
-                                // Komentarz: Probujemy wszystkie strony aby znalezc aktywna.
+                                // Try all pages to find active
                                 bool foundActive = false;
                                 for (size_t i = 0; i < g_config.pages.size(); ++i) {
                                     DWORD testPage = static_cast<DWORD>(i + 1);
@@ -823,7 +865,7 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
                             }
                         }
                         
-                        // Komentarz: Kontrolujemy FPS.
+                        // Control FPS
                         double frameTimeMs = frameTime * 1000.0;
                         int sleepMs = std::max(0, int((1000.0 / g_config.target_fps) - frameTimeMs));
                         Sleep(sleepMs);
@@ -856,7 +898,7 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
     }
 }
 
-// Komentarz: Callback wywolywany podczas enumeracji urzadzen.
+// Callback called during device enumeration
 void __stdcall EnumerateCallback(void* hDevice, void* pCtxt)
 {
     if (g_config.debug) {
@@ -865,10 +907,10 @@ void __stdcall EnumerateCallback(void* hDevice, void* pCtxt)
     DeviceChangeCallback(hDevice, true, pCtxt);
 }
 
-// Komentarz: Funkcja do dynamicznego ladowania funkcji z DirectOutput.dll.
+// Function for dynamic loading of functions from DirectOutput.dll
 bool LoadDirectOutputFunctions()
 {
-    // Komentarz: ladujemy biblioteke DirectOutput.dll.
+    // Load DirectOutput.dll
     g_hDirectOutput = LoadLibrary(L"DirectOutput.dll");
     if (!g_hDirectOutput)
     {
@@ -876,7 +918,7 @@ bool LoadDirectOutputFunctions()
         return false;
     }
 
-    // Komentarz: Pobieramy wskazniki do funkcji z DLL.
+    // Get pointers to functions from DLL
     g_pfnInitialize = (Pfn_DirectOutput_Initialize)GetProcAddress(g_hDirectOutput, "DirectOutput_Initialize");
     g_pfnDeinitialize = (Pfn_DirectOutput_Deinitialize)GetProcAddress(g_hDirectOutput, "DirectOutput_Deinitialize");
     g_pfnRegisterDeviceCallback = (Pfn_DirectOutput_RegisterDeviceCallback)GetProcAddress(g_hDirectOutput, "DirectOutput_RegisterDeviceCallback");
@@ -891,7 +933,7 @@ bool LoadDirectOutputFunctions()
     g_pfnSetLed = (Pfn_DirectOutput_SetLed)GetProcAddress(g_hDirectOutput, "DirectOutput_SetLed");
     g_pfnRemovePage = (Pfn_DirectOutput_RemovePage)GetProcAddress(g_hDirectOutput, "DirectOutput_RemovePage");
 
-    // Komentarz: Sprawdzamy czy wszystkie funkcje zostaly zaladowane.
+    // Check if all functions are loaded
     if (!g_pfnInitialize || !g_pfnDeinitialize || !g_pfnRegisterDeviceCallback || 
         !g_pfnEnumerate || !g_pfnAddPage || !g_pfnSetString || !g_pfnGetDeviceType || !g_pfnSetImageFromFile || !g_pfnSetImage)
     {
@@ -921,7 +963,7 @@ bool LoadDirectOutputFunctions()
     return true;
 }
 
-// Komentarz: Funkcja do zwolnienia zasobow DirectOutput.
+// Function for releasing DirectOutput resources
 void UnloadDirectOutput()
 {
     if (g_hDirectOutput)
@@ -979,7 +1021,7 @@ void scaleBilinear(const std::vector<unsigned char>& src, int srcW, int srcH, st
     }
 }
 
-// Helper: Draw overlay text on a 320x240 RGB buffer using Cairo (robust BGRA temp buffer)
+// Draw overlay text on a 320x240 RGB buffer using Cairo (robust BGRA temp buffer)
 void drawOverlayTextOnFIPBuffer(std::vector<unsigned char>& rgbBuffer, const wchar_t* overlayText) {
     if (!overlayText) return;
     // Create a temporary 320x240x4 BGRA buffer for Cairo
@@ -1016,7 +1058,7 @@ void drawOverlayTextOnFIPBuffer(std::vector<unsigned char>& rgbBuffer, const wch
 
 // --- Modified screenshot-to-FIP function ---
 void captureScreenRegionToFIPBuffer(int x, int y, int w, int h, std::vector<unsigned char>& outBuffer, const wchar_t* overlayText, ScaleMode scaleMode) {
-    // Komentarz: Dostosowujemy współrzędne jeśli wirtualny monitor jest włączony.
+    // Adjust coordinates if virtual monitor is enabled
     int adjustedX = x;
     int adjustedY = y;
     
@@ -1066,7 +1108,7 @@ void captureScreenRegionToFIPBuffer(int x, int y, int w, int h, std::vector<unsi
     drawOverlayTextOnFIPBuffer(outBuffer, overlayText);
 }
 
-// Helper: Send key events using SendInput
+// Send key events using SendInput
 void sendKeyCombo(const KeyCombo& combo, bool down) {
     std::vector<INPUT> inputs;
     // Modifiers first (down), main key, then modifiers up (if releasing)
@@ -1108,7 +1150,7 @@ void sendKeyCombo(const KeyCombo& combo, bool down) {
     }
 }
 
-// Helper: Clean up created pages on device disconnect
+// Clean up created pages on device disconnect
 void cleanupDevicePages(void* hDevice) {
     if (!g_pfnRemovePage || !hDevice) {
         if (g_config.debug) {
@@ -1147,12 +1189,16 @@ void cleanupDevicePages(void* hDevice) {
 // FIP soft button callback
 void __stdcall SoftButtonCallback(void* hDevice, DWORD dwButtons, void* pCtxt) {
     // S1-S6 are bits 10-5 (0x400, 0x200, 0x100, 0x80, 0x40, 0x20)
+    // Rotary encoders: LeftMinus=bit16, LeftPlus=bit8, RightMinus=bit4, RightPlus=bit2
+    if (g_config.debug) LogMessageFormatted(L"FIP pressed -> address -> %d", dwButtons);
+    
+    // Handle S1-S6 buttons
     for (int i = 0; i < 6; ++i) {
         DWORD mask = (1 << (10 - i)); // S1=10, S2=9, ..., S6=5
         bool wasDown = (g_prevSoftButtonState & mask) != 0;
         bool isDown = (dwButtons & mask) != 0;
         if (isDown != wasDown) {
-            auto it = g_fipButtonCombos.find(5 - i);
+            std::map<int, KeyCombo>::iterator it = g_fipButtonCombos.find(5 - i);
             if (it != g_fipButtonCombos.end()) {
                 if (isDown) {
                     sendKeyCombo(it->second, true); // key down
@@ -1164,10 +1210,40 @@ void __stdcall SoftButtonCallback(void* hDevice, DWORD dwButtons, void* pCtxt) {
             }
         }
     }
+    
+    // Handle rotary encoders
+    std::vector<std::pair<DWORD, std::string> > rotaryMasks;
+    rotaryMasks.push_back(std::make_pair(0x00000002, "RightRotaryPlus"));   // bit 2
+    rotaryMasks.push_back(std::make_pair(0x00000004, "RightRotaryMinus"));  // bit 4
+    rotaryMasks.push_back(std::make_pair(0x00000008, "LeftRotaryPlus"));    // bit 8
+    rotaryMasks.push_back(std::make_pair(0x00000010, "LeftRotaryMinus"));   // bit 16 (0x10)
+    for (size_t i = 0; i < rotaryMasks.size(); ++i) {
+        DWORD mask = rotaryMasks[i].first;
+        const std::string& key = rotaryMasks[i].second;
+        bool wasDown = (g_prevSoftButtonState & mask) != 0;
+        bool isDown = (dwButtons & mask) != 0;
+        std::map<std::string, KeyCombo>::iterator it = g_rotaryEncoderCombos.find(key);
+        if (isDown != wasDown) {
+            if (it != g_rotaryEncoderCombos.end()) {
+                if (isDown) {
+                    sendKeyCombo(it->second, true); // key down
+                    if (g_config.debug) LogMessageFormatted(L"FIP %s pressed -> key down ->%s", 
+                        std::wstring(key.begin(), key.end()).c_str(),
+                        std::wstring(it->second.combo.begin(), it->second.combo.end()).c_str());
+                } else {
+                    sendKeyCombo(it->second, false); // key up
+                    if (g_config.debug) LogMessageFormatted(L"FIP %s released -> key up ->%s", 
+                        std::wstring(key.begin(), key.end()).c_str(),
+                        std::wstring(it->second.combo.begin(), it->second.combo.end()).c_str());
+                }
+            }
+        }
+    }
+    
     g_prevSoftButtonState = dwButtons;
 }
 
-// Komentarz: Glowna logika FIP przeniesiona do osobnej funkcji.
+// Main FIP logic moved to separate function
 void RunFIPLogic() {
     LogMessage(L"=== Saitek FIP by Smokey ===");
     LogMessage(L"Loading configuration...");
@@ -1241,16 +1317,16 @@ int main(int argc, char* argv[])
     return 0;
 }
 
-// Uruchomienie programu: Ctrl + F5 lub menu Debugowanie > Uruchom bez debugowania
-// Debugowanie programu: F5 lub menu Debugowanie > Rozpocznij debugowanie
+// Run program: Ctrl + F5 or Debug > Start Without Debugging menu
+// Debug program: F5 or Debug > Start Debugging menu
 
-// Porady dotyczace rozpoczynania pracy:
-//   1. Uzyj okna Eksploratora rozwiazan, aby dodac pliki i zarzadzac nimi
-//   2. Uzyj okna programu Team Explorer, aby nawiazac polaczenie z kontrola zrodla
-//   3. Uzyj okna Dane wyjsciowe, aby sprawdzic dane wyjsciowe kompilacji i inne komunikaty
-//   4. Uzyj okna Lista bledow, aby zobaczyc bledy
-//   5. Wybierz pozycje Projekt > Dodaj nowy element, aby utworzyc nowe pliki kodu, lub wybierz pozycje Projekt > Dodaj istniejacy element, aby dodac istniejace pliku kodu do projektu
-//   6. Aby w przyszlosci ponownie otworzyc ten projekt, przejdz do pozycji Plik > Otworz > Projekt i wybierz plik sln
+// Tips for Getting Started: 
+//   1. Use the Solution Explorer window to add/manage files
+//   2. Use the Team Explorer window to connect to source control
+//   3. Use the Output window to see build output and other messages
+//   4. Use the Error List window to view errors
+//   5. Go to Project > Add New Item to create new code files, or Project > Add Existing Item to add existing code files to the project
+//   6. In the future, to open this project again, go to File > Open > Project and select the .sln file
 
 // Add SAL annotations to WinMain
 #include <sal.h>
@@ -1258,41 +1334,66 @@ int APIENTRY WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
     return main(__argc, __argv);
 }
 
-// Helper: Convert 320x240 RGB buffer to HBITMAP and update preview
+// Convert 320x240 RGB buffer to HBITMAP and update preview
 void UpdatePreviewBitmap(const std::vector<unsigned char>& rgbBuffer) {
+    // Check if preview is enabled and if enough time has passed since last update
     HWND hPreviewCheckbox = GetDlgItem(g_hMainWindow, ID_CHECKBOX_PREVIEW);
     if (!g_hPreview || !hPreviewCheckbox) return;
     if (SendMessage(hPreviewCheckbox, BM_GETCHECK, 0, 0) != BST_CHECKED) return;
-    // Create a 32bpp DIB section
-    BITMAPINFO bmi = {0};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = 320;
-    bmi.bmiHeader.biHeight = 240; // bottom-up for correct orientation
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    void* bits = nullptr;
-    HDC hdc = GetDC(NULL);
-    HBITMAP hBmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
-    ReleaseDC(NULL, hdc);
-    if (hBmp && bits) {
-        // Convert RGB to BGRA, no vertical flip
+    
+    // Limit preview update frequency to 10 FPS to reduce CPU load
+    ULONGLONG currentTime = GetTickCount64();
+    if (currentTime - g_lastPreviewUpdate < PREVIEW_UPDATE_INTERVAL) return;
+    g_lastPreviewUpdate = currentTime;
+    
+    std::lock_guard<std::mutex> lock(g_previewMutex);
+    
+    // Create DIB section only once and reuse it
+    if (!g_hPreviewDIB) {
+        BITMAPINFO bmi = {0};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = 320;
+        bmi.bmiHeader.biHeight = 240; // bottom-up for correct orientation
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+        
+        HDC hdc = GetDC(NULL);
+        g_hPreviewDIB = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &g_previewBits, NULL, 0);
+        ReleaseDC(NULL, hdc);
+        
+        if (!g_hPreviewDIB || !g_previewBits) {
+            if (g_hPreviewDIB) {
+                DeleteObject(g_hPreviewDIB);
+                g_hPreviewDIB = NULL;
+            }
+            return;
+        }
+    }
+    
+    // Convert RGB directly to DIB buffer
+    if (g_previewBits) {
         for (int y = 0; y < 240; ++y) {
             for (int x = 0; x < 320; ++x) {
                 int srcIdx = (y * 320 + x) * 3;
                 int dstIdx = (y * 320 + x) * 4;
-                ((unsigned char*)bits)[dstIdx + 0] = rgbBuffer[srcIdx + 2]; // B
-                ((unsigned char*)bits)[dstIdx + 1] = rgbBuffer[srcIdx + 1]; // G
-                ((unsigned char*)bits)[dstIdx + 2] = rgbBuffer[srcIdx + 0]; // R
-                ((unsigned char*)bits)[dstIdx + 3] = 255; // A
+                ((unsigned char*)g_previewBits)[dstIdx + 0] = rgbBuffer[srcIdx + 2]; // B
+                ((unsigned char*)g_previewBits)[dstIdx + 1] = rgbBuffer[srcIdx + 1]; // G
+                ((unsigned char*)g_previewBits)[dstIdx + 2] = rgbBuffer[srcIdx + 0]; // R
+                ((unsigned char*)g_previewBits)[dstIdx + 3] = 255; // A
             }
         }
-        // Set image in static control
-        HBITMAP oldBmp = (HBITMAP)SendMessage(g_hPreview, STM_SETIMAGE, IMAGE_BITMAP, (LPARAM)hBmp);
-        if (g_hPreviewBitmap) DeleteObject(g_hPreviewBitmap);
-        g_hPreviewBitmap = hBmp;
-        if (oldBmp && oldBmp != hBmp) DeleteObject(oldBmp);
-    } else if (hBmp) {
-        DeleteObject(hBmp);
+        
+        // Update control only if buffer changed
+        HBITMAP oldBmp = (HBITMAP)SendMessage(g_hPreview, STM_SETIMAGE, IMAGE_BITMAP, (LPARAM)g_hPreviewDIB);
+        if (g_hPreviewBitmap && g_hPreviewBitmap != g_hPreviewDIB) {
+            DeleteObject(g_hPreviewBitmap);
+        }
+        g_hPreviewBitmap = g_hPreviewDIB;
+        if (oldBmp && oldBmp != g_hPreviewDIB) {
+            DeleteObject(oldBmp);
+        }
     }
 }
+
+

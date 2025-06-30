@@ -6,10 +6,14 @@
 	"button_mappings": {
 		"S1": "LShift+A",
 		"S2": "RAlt+C",
-		"S3": "3",
-		"S4": "4",
-		"S5": "",
-		"S6": "6"
+		"S3": "~",
+		"S4": "Space",
+		"S5": "Enter",
+		"S6": "Escape",
+		"LeftRotaryMinus": "ArrowUp",
+		"LeftRotaryPlus": "ArrowDown",
+		"RightRotaryMinus": "ArrowLeft",
+		"RightRotaryPlus": "ArrowRight"
 	},
 	"pages": [
 			{
