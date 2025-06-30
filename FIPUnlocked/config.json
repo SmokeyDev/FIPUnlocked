@@ -1,0 +1,44 @@
+{
+	"debug": false,
+	"show_fps": true,
+	"show_screen_names": true,
+	"target_fps": 30,
+	"button_mappings": {
+		"S1": "LShift+A",
+		"S2": "RAlt+C",
+		"S3": "3",
+		"S4": "4",
+		"S5": "",
+		"S6": "6"
+	},
+	"pages": [
+			{
+					"name": "Test 1",
+					"capture_region": {
+							"x": 3840,
+							"y": 0,
+							"width": 320,
+							"height": 240
+					},
+					"fip_offset": {
+							"x": 50,
+							"y": 0
+					},
+					"scale_mode": "bilinear"
+			},
+			{
+					"name": "Test 2",
+					"capture_region": {
+							"x": 100,
+							"y": 100,
+							"width": 640,
+							"height": 480
+					},
+					"fip_offset": {
+							"x": 0,
+							"y": 0
+					},
+					"scale_mode": "nearest"
+			}
+	]
+}
