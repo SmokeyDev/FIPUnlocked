@@ -339,11 +339,6 @@ struct CaptureRegion {
     int height = 0;
 };
 
-struct FIPOffset {
-    int x = 0;
-    int y = 0;
-};
-
 enum class ScaleMode {
     Nearest,
     Bilinear
@@ -352,7 +347,6 @@ enum class ScaleMode {
 struct PageConfig {
     std::string name;
     CaptureRegion capture_region = {};
-    FIPOffset fip_offset = {};
     ScaleMode scale_mode = ScaleMode::Nearest;
 };
 
@@ -489,10 +483,6 @@ bool LoadConfiguration(const std::string& configFile) {
             page.capture_region.y = region["y"];
             page.capture_region.width = region["width"];
             page.capture_region.height = region["height"];
-
-            const auto& offset = pageJson["fip_offset"];
-            page.fip_offset.x = offset["x"];
-            page.fip_offset.y = offset["y"];
 
             std::string scaleMode = pageJson["scale_mode"];
             if (scaleMode == "bilinear") {
