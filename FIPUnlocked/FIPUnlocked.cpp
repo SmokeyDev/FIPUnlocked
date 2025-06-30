@@ -71,7 +71,10 @@ void QueueLogMessage(const std::wstring& message) {
     std::lock_guard<std::mutex> lock(g_logMutex);
     LogMsgStruct logMsg;
     logMsg.message = message;
-    logMsg.timestamp = GetTickCount64();
+    // Use current local time for timestamp
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    logMsg.timestamp = (ULONGLONG)st.wHour * 3600000 + (ULONGLONG)st.wMinute * 60000 + (ULONGLONG)st.wSecond * 1000 + (ULONGLONG)st.wMilliseconds;
     g_logQueue.push(logMsg);
     
     if (g_hMainWindow) {
@@ -86,12 +89,11 @@ void ProcessLogQueue() {
         LogMsgStruct logMsg = g_logQueue.front();
         g_logQueue.pop();
 
+        // Use SYSTEMTIME for actual wall clock time
+        SYSTEMTIME st;
+        GetLocalTime(&st);
         wchar_t timestamp[32];
-        swprintf_s(timestamp, L"[%02I64u:%02I64u:%02I64u] ", 
-            (logMsg.timestamp / 3600000) % 24,
-            (logMsg.timestamp / 60000) % 60,
-            (logMsg.timestamp / 1000) % 60);
-        
+        swprintf_s(timestamp, L"[%02d:%02d:%02d] ", st.wHour, st.wMinute, st.wSecond);
         std::wstring fullMessage = timestamp + logMsg.message + L"\r\n";
         
         if (g_hLogEdit) {
