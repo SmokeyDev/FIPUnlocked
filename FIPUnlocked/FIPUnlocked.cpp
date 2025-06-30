@@ -5,6 +5,7 @@ volatile bool g_shouldExit = false;
 #include <windows.h>
 #include <wchar.h>
 #include "DirectOutput.h"
+#include "resource.h"
 #include <fstream>
 #include <cstdint>
 #include <vector>
@@ -154,7 +155,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                 DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Consolas");
             SendMessage(g_hLogEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
-            QueueLogMessage(L"=== Saitek FIP by Smokey ===");
+            QueueLogMessage(L"=== FIPUnlocked ===");
             QueueLogMessage(L"GUI mode initialized. Application ready.");
             ProcessLogQueue();
             break;
@@ -278,11 +279,11 @@ bool InitializeGUI() {
     wc.cbSize = sizeof(WNDCLASSEX);
     wc.lpfnWndProc = MainWindowProc;
     wc.hInstance = GetModuleHandle(NULL);
-    wc.lpszClassName = L"SaitekFIPMainWindow";
+    wc.lpszClassName = L"FIPUnlockedMainWindow";
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-    wc.hIconSm = LoadIcon(NULL, IDI_APPLICATION);
+    wc.hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_ICON1));
+    wc.hIconSm = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_ICON1));
     
     if (!RegisterClassEx(&wc)) {
         return false;
@@ -290,7 +291,7 @@ bool InitializeGUI() {
     
     // Create main window
     g_hMainWindow = CreateWindowEx(
-        0, L"SaitekFIPMainWindow", L"Saitek FIP Controller",
+        0, L"FIPUnlockedMainWindow", L"FIPUnlocked",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, 800, 500,
         NULL, NULL, GetModuleHandle(NULL), NULL

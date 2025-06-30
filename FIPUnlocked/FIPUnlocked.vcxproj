@@ -243,6 +243,10 @@
   <ItemGroup>
     <ClCompile Include="FIPUnlocked.cpp" />
     <ClInclude Include="DirectOutput.h" />
+    <ClInclude Include="resource.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="FIPUnlocked.rc" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="DirectOutput.dll">
