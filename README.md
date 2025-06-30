@@ -22,7 +22,7 @@ Virtual Display Driver can be used to add virtual monitor, which can be used to 
 
 1. Edit `config.json` to your liking
 2. Connect Saitek FIP
-3. Run the application
+3. Run the `FIPUnlocked.exe`
 
 ## Known Limitations / Bugs
 
