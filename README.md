@@ -2,9 +2,9 @@
 
 ## Description
 
-This project aims to support Saitek/Logitech FIP (Flight Instrument Panel) in not supported games.
-Current version allows to clone selected parts of the monitors onto FIP 1-6 pages.
-S1-S6 buttons can be configured to work as simple keyboard emualtor supporting single key presses or combinations like `LShift + LAlt + L`.
+This project aims to support Saitek/Logitech FIP (Flight Instrument Panel) in unsupported games.
+Current version allows cloning selected parts of the monitors onto FIP 1-6 pages.
+S1-S6 buttons can be configured to work as simple keyboard emulator supporting single key presses or combinations like `LShift + LAlt + L`.
 
 Virtual Display Driver can be used to add virtual monitor, which can be used to display exported panels from DCS - e.g. with [Helios](https://github.com/HeliosVirtualCockpit/Helios)
 
@@ -33,11 +33,11 @@ Virtual Display Driver can be used to add virtual monitor, which can be used to 
 
 During my testing, app uses only ~7MB of RAM and negligible CPU usage
 
-For the best performance i suggest to capturing native resolution - 320x240px
+For the best performance I suggest capturing native resolution - 320x240px
 
 ## Config Example
 **!!! Do _not_ add any comments to your config.**
-Comment is a text with `//` prefix.
+Comment is a text with `//` prefix. If you want to copy the config below you'll need to remove them.
 
 Available modifier keys:
 - `LShift` / `RShift` - Left / Right Shift
@@ -53,7 +53,7 @@ Available modifier keys:
  "debug": false, // Shows more detailed logs within the app if set to true
  "show_fps": true, // Shows FPS in top left corner of the FIP
  "show_screen_names": true, // Shows screen names in top left corner of the FIP
- "target_fps": 30, // Taret FPS. 30 is recommended, likely not achievable. Setting this number higher might result in higher CPU/RAM usage.
+ "target_fps": 30, // Target FPS. 30 is recommended, likely not achievable. Setting this number higher might result in higher CPU/RAM usage.
  "button_mappings": {
   "S1": "LShift+A",
   "S2": "RAlt+C",
@@ -92,7 +92,7 @@ Available modifier keys:
 ## Next Steps
 
 - DCS-BIOS integration (input)
-- Custom Gauges / Panels support with DCS-Bios interation (output)
+- Custom Gauges / Panels support with DCS-Bios integration (output)
 - Config editor within the app
 - Profiles
 - Gauges editor within the app
