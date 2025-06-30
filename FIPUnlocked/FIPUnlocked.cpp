@@ -135,16 +135,16 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                 10, 420, 100, 30, hWnd, (HMENU)ID_BUTTON_CLEAR, GetModuleHandle(NULL), NULL
             );
-            g_hConfigButton = CreateWindow(
-                L"BUTTON", L"Config Editor",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                120, 420, 100, 30, hWnd, (HMENU)ID_BUTTON_CONFIG, GetModuleHandle(NULL), NULL
-            );
-            g_hSettingsButton = CreateWindow(
-                L"BUTTON", L"Settings",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                230, 420, 100, 30, hWnd, (HMENU)ID_BUTTON_SETTINGS, GetModuleHandle(NULL), NULL
-            );
+            // g_hConfigButton = CreateWindow(
+            //     L"BUTTON", L"Config Editor",
+            //     WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            //     120, 420, 100, 30, hWnd, (HMENU)ID_BUTTON_CONFIG, GetModuleHandle(NULL), NULL
+            // );
+            // g_hSettingsButton = CreateWindow(
+            //     L"BUTTON", L"Settings",
+            //     WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            //     230, 420, 100, 30, hWnd, (HMENU)ID_BUTTON_SETTINGS, GetModuleHandle(NULL), NULL
+            // );
             g_hExitButton = CreateWindow(
                 L"BUTTON", L"Exit",
                 WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
@@ -1245,7 +1245,6 @@ void __stdcall SoftButtonCallback(void* hDevice, DWORD dwButtons, void* pCtxt) {
 
 // Main FIP logic moved to separate function
 void RunFIPLogic() {
-    LogMessage(L"=== Saitek FIP by Smokey ===");
     LogMessage(L"Loading configuration...");
     if (!LoadConfiguration("config.json")) {
         LogMessage(L"Error loading configuration. Check if config.json exists.");

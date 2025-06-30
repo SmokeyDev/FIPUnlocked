@@ -1,7 +1,7 @@
 {
 	"debug": false,
-	"show_fps": true,
-	"show_screen_names": true,
+	"show_fps": false,
+	"show_screen_names": false,
 	"target_fps": 30,
 	"button_mappings": {
 		"S1": "LShift+A",

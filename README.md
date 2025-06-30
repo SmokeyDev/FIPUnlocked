@@ -8,6 +8,9 @@ S1-S6 buttons can be configured to work as simple keyboard emulator supporting s
 
 Virtual Display Driver can be used to add virtual monitor, which can be used to display exported panels from DCS - e.g. with [Helios](https://github.com/HeliosVirtualCockpit/Helios)
 
+
+![FIP Controller Screenshot](/preview.jpg)
+
 ## Requirements
 
 - Windows (x64)
