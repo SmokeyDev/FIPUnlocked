@@ -34,6 +34,7 @@ Important thing to remember is two FPS indicators (available when `show_fps` is 
 ## Known Limitations / Bugs
 
 - Cloning the screen maxes out at ~24 FPS
+- Colors in preview window appear inverted (interface only)
 
 ## Performance
 
