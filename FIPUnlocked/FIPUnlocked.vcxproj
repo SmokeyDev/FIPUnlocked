@@ -249,6 +249,9 @@
     <ResourceCompile Include="FIPUnlocked.rc" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="app.manifest" />
+  </ItemGroup>
+  <ItemGroup>
     <Content Include="DirectOutput.dll">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

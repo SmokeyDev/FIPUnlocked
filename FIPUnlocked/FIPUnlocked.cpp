@@ -66,7 +66,38 @@ void* g_previewBits = NULL;
 ULONGLONG g_lastPreviewUpdate = 0;
 const ULONGLONG PREVIEW_UPDATE_INTERVAL = 33;
 
-// Function for safely adding logs to the queue.
+// --- ASYNC FIP USB TRANSFER (Producer-Consumer, C++11/14 compatible) ---
+std::mutex g_fipFrameMutex;
+std::condition_variable g_fipFrameCV;
+std::vector<unsigned char> g_latestFipFrame;
+bool g_latestFipFrameReady = false;
+bool g_fipWorkerShouldExit = false;
+
+// --- Thread-safe active page and actual FPS tracking ---
+std::mutex g_activePageMutex;
+DWORD g_activePage = 1; // protected by g_activePageMutex
+float g_actualFipFps = 0.0f; // protected by g_activePageMutex
+
+// Global flag for log autoscroll
+bool g_logAutoScrollEnabled = true;
+
+// Implementations for helper functions
+DWORD GetActivePage() {
+    std::lock_guard<std::mutex> lock(g_activePageMutex);
+    return g_activePage;
+}
+void SetActivePage(DWORD page) {
+    std::lock_guard<std::mutex> lock(g_activePageMutex);
+    g_activePage = page;
+}
+float GetActualFipFps() {
+    std::lock_guard<std::mutex> lock(g_activePageMutex);
+    return g_actualFipFps;
+}
+void SetActualFipFps(float fps) {
+    std::lock_guard<std::mutex> lock(g_activePageMutex);
+    g_actualFipFps = fps;
+}
 void QueueLogMessage(const std::wstring& message) {
     std::lock_guard<std::mutex> lock(g_logMutex);
     LogMsgStruct logMsg;
@@ -76,15 +107,27 @@ void QueueLogMessage(const std::wstring& message) {
     GetLocalTime(&st);
     logMsg.timestamp = (ULONGLONG)st.wHour * 3600000 + (ULONGLONG)st.wMinute * 60000 + (ULONGLONG)st.wSecond * 1000 + (ULONGLONG)st.wMilliseconds;
     g_logQueue.push(logMsg);
-    
     if (g_hMainWindow) {
         PostMessage(g_hMainWindow, WM_APPEND_LOG, 0, 0);
     }
 }
 
+// Helper to check if log is scrolled to bottom
+bool IsLogScrolledToBottom(HWND hEdit) {
+    int lineCount = (int)SendMessage(hEdit, EM_GETLINECOUNT, 0, 0);
+    int firstVisible = (int)SendMessage(hEdit, EM_GETFIRSTVISIBLELINE, 0, 0);
+    RECT rc;
+    GetClientRect(hEdit, &rc);
+    int visibleLines = rc.bottom / 16; // Approximate line height
+    return (firstVisible + visibleLines) >= lineCount - 1;
+}
+
 // Function for processing the log queue in the GUI thread.
 void ProcessLogQueue() {
     std::lock_guard<std::mutex> lock(g_logMutex);
+    if (!g_hLogEdit) return;
+    // Check if user is at the bottom before appending
+    g_logAutoScrollEnabled = IsLogScrolledToBottom(g_hLogEdit);
     while (!g_logQueue.empty()) {
         LogMsgStruct logMsg = g_logQueue.front();
         g_logQueue.pop();
@@ -96,14 +139,13 @@ void ProcessLogQueue() {
         swprintf_s(timestamp, L"[%02d:%02d:%02d] ", st.wHour, st.wMinute, st.wSecond);
         std::wstring fullMessage = timestamp + logMsg.message + L"\r\n";
         
-        if (g_hLogEdit) {
-            int textLen = GetWindowTextLength(g_hLogEdit);
-            SendMessage(g_hLogEdit, EM_SETSEL, textLen, textLen);
-            SendMessage(g_hLogEdit, EM_REPLACESEL, FALSE, (LPARAM)fullMessage.c_str());
-            textLen = GetWindowTextLength(g_hLogEdit);
+        int textLen = GetWindowTextLength(g_hLogEdit);
+        SendMessage(g_hLogEdit, EM_SETSEL, textLen, textLen);
+        SendMessage(g_hLogEdit, EM_REPLACESEL, FALSE, (LPARAM)fullMessage.c_str());
+        textLen = GetWindowTextLength(g_hLogEdit);
+        if (g_logAutoScrollEnabled) {
             SendMessage(g_hLogEdit, EM_SETSEL, textLen, textLen);
             SendMessage(g_hLogEdit, EM_SCROLLCARET, 0, 0);
-            // Force scroll bar to bottom and refresh the control
             SendMessage(g_hLogEdit, WM_VSCROLL, SB_BOTTOM, 0);
             UpdateWindow(g_hLogEdit);
         }
@@ -265,6 +307,27 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
             mmi->ptMinTrackSize.y = 427;
             break;
         }
+        
+        case WM_VSCROLL:
+            if ((HWND)lParam == g_hLogEdit) {
+                // If user scrolls to bottom, re-enable autoscroll
+                if (IsLogScrolledToBottom(g_hLogEdit)) {
+                    g_logAutoScrollEnabled = true;
+                } else {
+                    g_logAutoScrollEnabled = false;
+                }
+            }
+            break;
+        
+        case WM_MOUSEWHEEL:
+            if (g_hLogEdit && GetFocus() == g_hLogEdit) {
+                if (IsLogScrolledToBottom(g_hLogEdit)) {
+                    g_logAutoScrollEnabled = true;
+                } else {
+                    g_logAutoScrollEnabled = false;
+                }
+            }
+            break;
         
         default:
             return DefWindowProc(hWnd, uMsg, wParam, lParam);
@@ -565,6 +628,10 @@ void __stdcall SoftButtonCallback(void* hDevice, DWORD dwButtons, void* pCtxt);
 // Forward declaration for page cleanup
 void cleanupDevicePages(void* hDevice);
 
+// Add forward declaration for FIPDisplay before FipUsbWorker
+class FIPDisplay;
+void FipUsbWorker(void* hDevice, DWORD page, FIPDisplay* fipDisplay, Pfn_DirectOutput_SetImage setImageFunc);
+
 // Class for managing rendering of instruments on FIP
 class FIPDisplay {
 private:
@@ -620,8 +687,6 @@ typedef HRESULT(__stdcall* Pfn_DirectOutput_SetString)(void* hDevice, DWORD dwPa
 typedef HRESULT(__stdcall* Pfn_DirectOutput_GetDeviceType)(void* hDevice, LPGUID pGuid);
 typedef HRESULT(__stdcall* Pfn_DirectOutput_SetImageFromFile)(void* hDevice, DWORD dwPage, DWORD dwIndex, DWORD cchFilename, const wchar_t* wszFilename);
 typedef HRESULT(__stdcall* Pfn_DirectOutput_SetImage)(void* hDevice, DWORD dwPage, DWORD dwIndex, DWORD cbValue, const void* pvValue);
-typedef void(__stdcall* Pfn_DirectOutput_PageCallback)(void* hDevice, DWORD dwPage, bool bSetActive, void* pCtxt);
-typedef HRESULT(__stdcall* Pfn_DirectOutput_RegisterPageCallback)(void* hDevice, Pfn_DirectOutput_PageCallback pfnCb, void* pCtxt);
 
 // Global variables for storing pointers to functions from DLL
 HMODULE g_hDirectOutput = NULL;
@@ -634,31 +699,14 @@ Pfn_DirectOutput_SetString g_pfnSetString = NULL;
 Pfn_DirectOutput_GetDeviceType g_pfnGetDeviceType = NULL;
 Pfn_DirectOutput_SetImageFromFile g_pfnSetImageFromFile = NULL;
 Pfn_DirectOutput_SetImage g_pfnSetImage = NULL;
-Pfn_DirectOutput_RegisterPageCallback g_pfnRegisterPageCallback = NULL;
 
 // Global variables for storing device information
 void* g_hDevice = NULL;
 DWORD g_dwPage = 1;
 bool g_bDeviceFound = false;
 
-// Global variable to track the active page
-DWORD g_activePage = 2;
-
 // Global vector to track created page IDs for cleanup on disconnect
 std::vector<DWORD> g_createdPageIds;
-
-// Page callback to track active page changes
-void __stdcall PageCallback(void* hDevice, DWORD dwPage, bool bSetActive, void* pCtxt) {
-    if (g_config.debug) {
-        LogMessage(L"PageCallback triggered!");
-    }
-    if (bSetActive) {
-        g_activePage = dwPage;
-        if (g_config.debug) {
-            LogMessageFormatted(L"User switched to page %d (now active)", dwPage);
-        }
-    }
-}
 
 void __stdcall LightUpButtons(void* hDevice) {
         // Reapply LED illumination for new active page
@@ -733,6 +781,9 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
             return;
         }
 
+        // Set initial active page to 1 (first page)
+        SetActivePage(1);
+        
         // Set FIP button LEDs based on config
         LightUpButtons(hDevice);
 
@@ -764,6 +815,15 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
                         LogMessage(L"FIP screenshot test running. Press Ctrl+C to exit.");
                     }
                     
+                    // Start the FIP USB worker thread
+                    std::thread fipUsbThread;
+                    if (g_bDeviceFound) {
+                        g_fipWorkerShouldExit = false;
+                        fipUsbThread = std::thread([hDevice, &fipDisplay](DWORD page, Pfn_DirectOutput_SetImage setImageFunc) {
+                            FipUsbWorker(hDevice, page, &fipDisplay, setImageFunc);
+                        }, g_activePage, g_pfnSetImage);
+                    }
+                    
                     while (!g_shouldExit) {
                         if (g_config.show_fps) {
                             QueryPerformanceCounter(&t1);
@@ -787,6 +847,9 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
 
 
                         // Capture screen for active page
+                        if (g_config.debug) {
+                            LogMessageFormatted(L"Active page: %d, Total pages: %d", g_activePage, g_config.pages.size());
+                        }
                         if (g_activePage > 0 && g_activePage <= static_cast<DWORD>(g_config.pages.size())) {
                             size_t pageIndex = g_activePage - 1;
                             const auto& pageConfig = g_config.pages[pageIndex];
@@ -801,13 +864,13 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
                             // Create text overlay with FPS
                             wchar_t overlay[128];
                             if (g_config.show_screen_names && g_config.show_fps) {
-                                swprintf(overlay, 128, L"FPS: %.1f | %s", avgFps, 
+                                swprintf(overlay, 128, L"App FPS: %.1f | FIP FPS: %.1f\n%s", (double)avgFps, (double)GetActualFipFps(), 
                                         std::wstring(pageConfig.name.begin(), pageConfig.name.end()).c_str());
                             } else if (g_config.show_screen_names) {
                                 swprintf(overlay, 128, L"%s", 
                                         std::wstring(pageConfig.name.begin(), pageConfig.name.end()).c_str());
                             } else if (g_config.show_fps) {
-                                swprintf(overlay, 128, L"FPS: %.1f", avgFps);
+                                swprintf(overlay, 128, L"App FPS: %.1f | FIP FPS: %.1f", (double)avgFps, (double)GetActualFipFps());
                             } else {
                                 swprintf(overlay, 128, L"");
                             }
@@ -826,46 +889,12 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
                             
                             // Update FIP with intelligent page detection
                             UpdatePreviewBitmap(buffer);
-                            HRESULT hr = fipDisplay.updateFIP(hDevice, g_activePage, g_pfnSetImage, buffer);
-                            if (FAILED(hr)) {
-                                if (g_config.debug) {
-                                    LogMessageFormatted(L"Update failed for page %d. Probing all pages...", g_activePage);
-                                }
-                                
-                                // Try all pages to find active
-                                bool foundActive = false;
-                                for (size_t i = 0; i < g_config.pages.size(); ++i) {
-                                    DWORD testPage = static_cast<DWORD>(i + 1);
-                                    const auto& testConfig = g_config.pages[i];
-                                    
-                                    std::vector<unsigned char> testBuffer;
-                                    captureScreenRegionToFIPBuffer(
-                                        testConfig.capture_region.x,
-                                        testConfig.capture_region.y,
-                                        testConfig.capture_region.width,
-                                        testConfig.capture_region.height,
-                                        testBuffer,
-                                        overlay,
-                                        testConfig.scale_mode
-                                    );
-                                    
-                                    UpdatePreviewBitmap(testBuffer);
-                                    HRESULT testHr = fipDisplay.updateFIP(hDevice, testPage, g_pfnSetImage, testBuffer);
-                                    if (SUCCEEDED(testHr)) {
-                                        g_activePage = testPage;
-                                        LogMessageFormatted(L"Page %d is now considered active.", testPage);
-                                        foundActive = true;
-                                        LightUpButtons(hDevice);
-                                        break;
-                                    }
-                                }
-                                
-                                if (!foundActive) {
-                                    if (g_config.debug) {
-                                        LogMessage(L"Failed to update any page!");
-                                    }
-                                }
+                            {
+                                std::lock_guard<std::mutex> lock(g_fipFrameMutex);
+                                g_latestFipFrame = buffer;
+                                g_latestFipFrameReady = true;
                             }
+                            g_fipFrameCV.notify_one();
                         }
                         
                         // Control FPS
@@ -876,6 +905,14 @@ void __stdcall DeviceChangeCallback(void* hDevice, bool bAdded, void* pCtxt)
                     
                     if (g_config.debug) {
                         LogMessage(L"Ctrl+C received. Exiting...");
+                    }
+                    {
+                        {
+                            std::lock_guard<std::mutex> lock(g_fipFrameMutex);
+                            g_fipWorkerShouldExit = true;
+                            g_fipFrameCV.notify_one();
+                        }
+                        if (fipUsbThread.joinable()) fipUsbThread.join();
                     }
                     return;
                 } else {
@@ -931,7 +968,6 @@ bool LoadDirectOutputFunctions()
     g_pfnGetDeviceType = (Pfn_DirectOutput_GetDeviceType)GetProcAddress(g_hDirectOutput, "DirectOutput_GetDeviceType");
     g_pfnSetImageFromFile = (Pfn_DirectOutput_SetImageFromFile)GetProcAddress(g_hDirectOutput, "DirectOutput_SetImageFromFile");
     g_pfnSetImage = (Pfn_DirectOutput_SetImage)GetProcAddress(g_hDirectOutput, "DirectOutput_SetImage");
-    g_pfnRegisterPageCallback = (Pfn_DirectOutput_RegisterPageCallback)GetProcAddress(g_hDirectOutput, "DirectOutput_RegisterPageCallback");
     g_pfnRegisterSoftButtonCallback = (Pfn_DirectOutput_RegisterSoftButtonCallback)GetProcAddress(g_hDirectOutput, "DirectOutput_RegisterSoftButtonCallback");
     g_pfnSetLed = (Pfn_DirectOutput_SetLed)GetProcAddress(g_hDirectOutput, "DirectOutput_SetLed");
     g_pfnRemovePage = (Pfn_DirectOutput_RemovePage)GetProcAddress(g_hDirectOutput, "DirectOutput_RemovePage");
@@ -947,13 +983,6 @@ bool LoadDirectOutputFunctions()
     }
     if (!g_pfnRegisterSoftButtonCallback && g_config.debug) {
         LogMessage(L"Warning: DirectOutput_RegisterSoftButtonCallback is not available in this DLL. Soft button events will not be handled.");
-    }
-    if (g_config.debug) {
-        if (g_pfnRegisterPageCallback && g_config.debug) {
-            LogMessage(L"RegisterPageCallback is available.");
-        } else {
-            LogMessage(L"RegisterPageCallback is NOT available in this DLL.");
-        }
     }
     if (!g_pfnSetLed && g_config.debug) {
         LogMessage(L"Warning: DirectOutput_SetLed is not available in this DLL. Button LEDs will not be controlled.");
@@ -1035,12 +1064,28 @@ void drawOverlayTextOnFIPBuffer(std::vector<unsigned char>& rgbBuffer, const wch
     cairo_select_font_face(cr, "Consolas", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
     cairo_set_font_size(cr, 16);
     cairo_set_source_rgb(cr, 0, 1, 0); // Green
-    cairo_move_to(cr, 4, 16);
-    // Convert wchar_t* to UTF-8
-    char utf8[128];
-    size_t converted = 0;
-    wcstombs_s(&converted, utf8, sizeof(utf8), overlayText, _TRUNCATE);
-    cairo_show_text(cr, utf8);
+    // Multi-line support
+    int lineHeight = 20;
+    int y = 16;
+    const wchar_t* start = overlayText;
+    while (*start) {
+        const wchar_t* end = wcschr(start, L'\n');
+        std::wstring line;
+        if (end) {
+            line.assign(start, end - start);
+        } else {
+            line.assign(start);
+        }
+        // Convert wchar_t* to UTF-8
+        char utf8[128];
+        size_t converted = 0;
+        wcstombs_s(&converted, utf8, sizeof(utf8), line.c_str(), _TRUNCATE);
+        cairo_move_to(cr, 4, y);
+        cairo_show_text(cr, utf8);
+        y += lineHeight;
+        if (!end) break;
+        start = end + 1;
+    }
     cairo_destroy(cr);
     cairo_surface_destroy(surface);
     // Composite: copy RGB from BGRA temp buffer to FIP buffer (ignore alpha), flipping vertically
@@ -1304,8 +1349,30 @@ void RunFIPLogic() {
     LogMessage(L"Software terminated.");
 }
 
+// Function to check if the application is running with administrator privileges
+bool IsRunningAsAdministrator() {
+    BOOL isAdmin = FALSE;
+    PSID adminGroup = NULL;
+    SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+    
+    if (AllocateAndInitializeSid(&ntAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+        DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &adminGroup)) {
+        CheckTokenMembership(NULL, adminGroup, &isAdmin);
+        FreeSid(adminGroup);
+    }
+    
+    return isAdmin != FALSE;
+}
+
 int main(int argc, char* argv[])
 {
+    // Check if running as administrator
+    if (!IsRunningAsAdministrator()) {
+        MessageBox(NULL, L"FIPUnlocked requires administrator privileges to run properly.\n\nPlease right-click the application and select 'Run as administrator'.", 
+                   L"Administrator Privileges Required", MB_OK | MB_ICONWARNING);
+        return 1;
+    }
+    
     timeBeginPeriod(1); // Set timer resolution to 1 ms for accurate Sleep()
     std::signal(SIGINT, signalHandler);
     if (!InitializeGUI()) {
@@ -1395,6 +1462,57 @@ void UpdatePreviewBitmap(const std::vector<unsigned char>& rgbBuffer) {
         if (oldBmp && oldBmp != g_hPreviewDIB) {
             DeleteObject(oldBmp);
         }
+    }
+}
+
+// Worker thread for sending frames to FIP asynchronously
+void FipUsbWorker(void* hDevice, DWORD page, FIPDisplay* fipDisplay, Pfn_DirectOutput_SetImage setImageFunc) {
+    while (true) {
+        std::vector<unsigned char> frame;
+        {
+            std::unique_lock<std::mutex> lock(g_fipFrameMutex);
+            g_fipFrameCV.wait(lock, [] { return g_latestFipFrameReady || g_fipWorkerShouldExit; });
+            if (g_fipWorkerShouldExit) break;
+            // Swap out the latest frame and reset the flag
+            frame.swap(g_latestFipFrame);
+            g_latestFipFrameReady = false;
+        }
+        // Send frame to FIP (USB transfer)
+        DWORD currentPage = GetActivePage();
+        HRESULT hr = fipDisplay->updateFIP(hDevice, currentPage, setImageFunc, frame);
+        if (FAILED(hr)) {
+            // Log the error
+            if (g_config.debug) {
+                LogMessageFormatted(L"Update failed for page %d (HRESULT=0x%08X). Probing all pages...", currentPage, hr);
+            }
+            // Try all pages to find the active one
+            bool foundActive = false;
+            for (DWORD testPage = 1; testPage <= MAX_PAGES; ++testPage) {
+                HRESULT testHr = fipDisplay->updateFIP(hDevice, testPage, setImageFunc, frame);
+                if (SUCCEEDED(testHr)) {
+                    SetActivePage(testPage);
+                    LogMessageFormatted(L"Page %d is now considered active.", testPage);
+                    foundActive = true;
+                    LightUpButtons(hDevice);
+                    break;
+                }
+            }
+            if (!foundActive) {
+                LogMessage(L"Failed to update any page! No active page found.");
+            }
+        }
+
+        // Track actual FPS
+        static std::vector<double> sendTimes;
+        static LARGE_INTEGER freq, tSend;
+        if (sendTimes.empty()) QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&tSend);
+        double now = double(tSend.QuadPart) / freq.QuadPart;
+        sendTimes.push_back(now);
+        while (!sendTimes.empty() && now - sendTimes.front() > 2.0) sendTimes.erase(sendTimes.begin());
+        float actualFps = 0.0f;
+        if (sendTimes.size() > 1) actualFps = float(sendTimes.size() - 1) / float(sendTimes.back() - sendTimes.front());
+        SetActualFipFps(actualFps);
     }
 }
 
