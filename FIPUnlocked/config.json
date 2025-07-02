@@ -2,7 +2,7 @@
 	"debug": false,
 	"show_fps": false,
 	"show_screen_names": false,
-	"target_fps": 30,
+	"target_fps": 60,
 	"button_mappings": {
 		"S1": "A",
 		"S2": "LShift+LCtrl+RAlt+C",
