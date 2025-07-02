@@ -38,6 +38,7 @@ Important thing to remember is two FPS indicators (available when `show_fps` is 
 ## Performance
 
 During my testing, app uses only ~7MB of RAM and negligible CPU usage while capturing native 320x240px.
+When capturing region in 4K resolution, RAM usage maxed out at ~60MB.
 
 Assuming you will not capture 4K just to be scaled down to 320x240px, you should keep `target_fps` in `config.json` at 60.
 

@@ -1482,7 +1482,9 @@ void FipUsbWorker(void* hDevice, DWORD page, FIPDisplay* fipDisplay, Pfn_DirectO
         HRESULT hr = fipDisplay->updateFIP(hDevice, currentPage, setImageFunc, frame);
         if (FAILED(hr)) {
             // Log the error
-            LogMessageFormatted(L"Update failed for page %d (HRESULT=0x%08X). Probing all pages...", currentPage, hr);
+            if (g_config.debug) {
+                LogMessageFormatted(L"Update failed for page %d (HRESULT=0x%08X). Probing all pages...", currentPage, hr);
+            }
             // Try all pages to find the active one
             bool foundActive = false;
             for (DWORD testPage = 1; testPage <= MAX_PAGES; ++testPage) {
